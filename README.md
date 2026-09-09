@@ -16,7 +16,7 @@
 - 段间衔接目前支持 15s 上下文记忆。更快的速度选择稀疏，更好的质量使用连续。
 稀疏具有全部的空间信息和尾部的运动轨迹及音频，连续具有上段所有信息。
 
-## 新功能与使用方法
+## 节点
 
 ### 1. `MiniMaxH3Segment` —— 外部采样条件节点
 
@@ -42,9 +42,9 @@ MiniMaxH3Segment.source_audio ──▶ source_audio（使用原声时接）
 mode: generate（默认）/ source / mute
 ```
 
-### 4. 本地二采视频（`frames_0` / `audio_0`）
+### 4. `MiniMax H3 Save Latent` —— 保存latent
 
-除 v2v/rv2v 外，每组/镜可上传一个本地二采视频，节点输出其帧 `frames_0`（IMAGE）与音频 `audio_0`（AUDIO）以及`latent_0`，**仅供外部自定义采样使用，不参与内部条件编码**。
+保存视频latent，并支持回填到素材组。
 
 
 ### 5. `MiniMaxH3RemoveNegativeTimeContext` —— 移除负时间条件
