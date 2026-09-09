@@ -308,20 +308,6 @@ async def minimax_import_material(request):
     return web.json_response({"segments": out_segments, "errors": errors})
 
 
-async def minimax_backfill_registry(request):
-    """Read the SaveLatent「回填」registry (output/minimax_h3_backfill.json).
-
-    GET /minimax/director_local/backfill[?node_id=<seg node id>]
-    - with node_id: returns ``{row: {videoFile, fileName, subfolder, type}}`` for that
-      segment node (frontend 写回素材组二采槽用);
-    - without: returns the full table ``{node_id: {row: two-ref}}``.
-    """
-    from .backfill_store import snapshot
-
-    node_id = str(request.query.get("node_id") or "").strip()
-    return web.json_response(snapshot(node_id or None))
-
-
 def _register_route(routes, method: str, path: str, handler) -> None:
     if hasattr(routes, "add_route"):
         routes.add_route(method, path, handler)
@@ -350,7 +336,6 @@ def register_routes() -> bool:
     _register_route(routes, "GET", "/minimax/director_local/probe_video", minimax_probe_video)
     _register_route(routes, "POST", "/minimax/director_local/detect_shots", minimax_detect_shots)
     _register_route(routes, "POST", "/minimax/director_local/import_material", minimax_import_material)
-    _register_route(routes, "GET", "/minimax/director_local/backfill", minimax_backfill_registry)
     _ROUTES_REGISTERED = True
     log.info("MiniMax H3 Director HTTP routes registered")
     return True

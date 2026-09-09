@@ -13,6 +13,41 @@ from ..lib.video_io import load_timeline_segment
 from .frame_align import pad_or_trim_frames
 from .plan import DirectorPlan
 
+# ── 执行期「当前跑的素材组」上下文 ──
+# MiniMaxH3Segment.execute 每段开跑时记录(节点 id → 时间轴素材组下标);
+# MiniMaxH3SaveLatent 的「回填」据此把保存路径写回该素材组的本地二采latent。
+# ComfyUI 串行执行节点,取最近一次记录即可;没有记录时回填会明确报错。
+_CURRENT_SEGMENT: dict[str, int] = {}
+_LAST_SEGMENT_NODE: list[str] = []
+
+
+def set_current_segment(node_id, timeline_index) -> None:
+    """记录当前正在执行的素材组(节点 id + 时间轴卡片下标)。"""
+    key = str(node_id) if node_id is not None else ""
+    if not key:
+        return
+    try:
+        idx = int(timeline_index)
+    except (TypeError, ValueError):
+        return
+    if idx < 0:
+        return
+    _CURRENT_SEGMENT[key] = idx
+    if _LAST_SEGMENT_NODE and _LAST_SEGMENT_NODE[0] == key:
+        return
+    _LAST_SEGMENT_NODE[:] = [key]
+
+
+def get_current_segment() -> tuple[str | None, int | None]:
+    """返回最近执行的 (节点 id, 时间轴素材组下标);无记录 → (None, None)。"""
+    if not _LAST_SEGMENT_NODE:
+        return None, None
+    key = _LAST_SEGMENT_NODE[0]
+    idx = _CURRENT_SEGMENT.get(key)
+    if idx is None:
+        return None, None
+    return key, int(idx)
+
 
 def needs_source_video(task_key: str) -> bool:
     return task_key in {"i2v", "fl2v", "v2v", "rv2v"}

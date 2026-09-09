@@ -42,9 +42,8 @@ from ..director.plan import (
     reinforce_rv2v_prompt,
     reinforce_v2v_prompt,
 )
-from ..director.backfill_store import get_backfill
 from ..director.segment_cache import _av_latent_to_cpu, prune_stale_segment_cache
-from ..director.segment_runtime import resolve_segment_raw_clip
+from ..director.segment_runtime import resolve_segment_raw_clip, set_current_segment
 from ..lib.audio_io import extract_timeline_audio, load_reference_audio
 from ..lib.image_prep import fit_canvas, fit_video_long_edge
 from ..lib.task_prompts import TASK_PROMPT_BY_KEY, resolve_task_key, task_type_option_label
@@ -268,12 +267,15 @@ class MiniMaxH3Segment:
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
+                # Easy-Use for 循环从第 2 圈起,循环体内节点是 GraphBuilder 展开的临时
+                # 副本,unique_id 变成形如 "394.0.0.2.0.0.468" 的执行期 id;用 DYNPROMPT
+                # 解析回画布真实节点 id,SaveLatent 回填事件才能路由到时间轴编辑器。
                 "dynprompt": "DYNPROMPT",
             },
         }
 
-    RETURN_TYPES = ("CONDITIONING", "LATENT", "INT", "INT", "AUDIO", "IMAGE", "AUDIO", "LATENT", "INT")
-    RETURN_NAMES = ("positive", "latent", "trim_frames", "target_frames", "source_audio", "frames_0", "audio_0", "latent_0", "loop_index")
+    RETURN_TYPES = ("CONDITIONING", "LATENT", "INT", "INT", "AUDIO", "IMAGE", "AUDIO", "LATENT")
+    RETURN_NAMES = ("positive", "latent", "trim_frames", "target_frames", "source_audio", "frames_0", "audio_0", "latent_0")
     FUNCTION = "execute"
     CATEGORY = "MinimaxH3_Segment"
     DESCRIPTION = (
@@ -287,8 +289,6 @@ class MiniMaxH3Segment:
         "latent_0 = 该段「本地二采 latent」(纯透传,不参与内部条件)。若上传了本地二采 latent,"
         "且时间轴勾选「段间引导 + 引用上段」,trim_frames 仍按重叠帧输出,target_frames = 段目标帧数,"
         "供解码后用 MiniMaxH3R2VTrim 裁出与段时长一致的对齐视频。"
-        "loop_index = 本次循环 index 原样透出(供 MiniMaxH3SaveLatent「回填」接线定位该段素材组)。"
-        "本地二采 latent 也可由回填自动注入:Save Latent 勾回填后,下次跑该行自动用最近一次保存的 latent。"
     )
 
     def execute(
@@ -360,6 +360,21 @@ class MiniMaxH3Segment:
                     "loop 的 total 应设为时间轴的段数。"
                 )
             seg = plan.segments[index]
+
+        # 登记「当前跑的素材组」:SaveLatent 的「回填」据此把保存路径写回该组。
+        # unique_id = 本 Segment 节点 id(前端时间轴 UI 就挂在这个节点上),
+        # timeline_index = 素材组卡片下标(前端 segments 数组下标)。
+        # Easy-Use for 循环第 2 圈起 unique_id 是 GraphBuilder 展开的临时执行 id
+        # (形如 "394.0.0.2.0.0.468"),必须经 dynprompt 解析回画布真实节点 id,
+        # 否则前端按 node_id 找不到时间轴编辑器,回填事件会被静默丢弃(只有第 1 圈生效)。
+        display_node_id = unique_id
+        if dynprompt is not None and unique_id is not None:
+            try:
+                display_node_id = dynprompt.get_display_node_id(str(unique_id))
+            except Exception:
+                display_node_id = unique_id
+        if display_node_id:
+            set_current_segment(display_node_id, seg.timeline_index)
 
         # 源片段:gen 任务取 seg.source_clip,v2v/rv2v 从源视频时间轴取该段画面。按输出画布归一。
         clip_frames = resolve_segment_raw_clip(plan, seg)
@@ -434,34 +449,9 @@ class MiniMaxH3Segment:
         guide_latent, guide_has_audio = _load_latent_file(
             seg_raw.get("guideLatent") or seg_raw.get("guide_latent")
         )
-        two_ref = seg_raw.get("twoLatent") or seg_raw.get("two_latent")
-        # SaveLatent「回填」:该 (段节点, 循环 index) 最近一次保存的 latent 总是
-        # 覆盖素材组手动填的两 ref(登记表在 SaveLatent 回填时写、关闭回填时清)。
-        # easy-forLoop 每轮给循环体节点换带前缀的临时 id(如 394.1.0.468),用
-        # dynprompt 归一成逻辑段节点 id(468),保证与 Save 侧登记 key 一致。
-        seg_uid = str(unique_id)
-        if dynprompt is not None:
-            try:
-                seg_uid = str(dynprompt.get_display_node_id(str(unique_id)))
-            except Exception:
-                pass
-        backfilled = get_backfill(seg_uid, int(index))
-        if backfilled is not None:
-            log.info(
-                "MiniMaxH3Segment[node %s]: 行 %s 命中回填登记,input/%s 覆盖素材组两 ref",
-                seg_uid,
-                int(index),
-                backfilled.get("videoFile") or backfilled.get("fileName") or "?",
-            )
-            two_ref = backfilled
-        else:
-            log.debug(
-                "MiniMaxH3Segment[node %s]: 行 %s 无回填登记(手动两 ref=%r)",
-                seg_uid,
-                int(index),
-                (two_ref or {}).get("videoFile") if isinstance(two_ref, dict) else two_ref,
-            )
-        two_latent, _ = _load_latent_file(two_ref)
+        two_latent, _ = _load_latent_file(
+            seg_raw.get("twoLatent") or seg_raw.get("two_latent")
+        )
         # r2v 参考图尺寸(统一设置,存于 output):match=按生成画布等比缩放,max=2048 高清保真。
         _out = plan.raw.get("output") or {}
         ref_image_size = str(_out.get("refImageSize") or _out.get("ref_image_size") or "match")
@@ -619,19 +609,7 @@ class MiniMaxH3Segment:
             if two_latent is not None
             else None
         )
-        return (
-            positive,
-            latent,
-            int(trim_frames),
-            int(seg.frame_count),
-            source_audio,
-            frames_0,
-            audio_0,
-            latent_0,
-            # loop_index = 本次循环 index 原样透出,供 MiniMaxH3SaveLatent「回填」
-            # 从段节点接 index,自动定位该段素材组(twoLatent)行。
-            int(index),
-        )
+        return positive, latent, int(trim_frames), int(seg.frame_count), source_audio, frames_0, audio_0, latent_0
 
 
 # 旧名兼容(早期 r2v-only 工作流)。

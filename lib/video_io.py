@@ -30,19 +30,38 @@ def _require_cv2():
 
 
 def resolve_video_path(video: dict) -> str:
-    """Resolve timeline video metadata to an absolute path under ComfyUI input."""
+    """Resolve timeline video metadata to an absolute path under ComfyUI input/output.
+
+    Uploaded assets live in ``input``. ``MiniMaxH3SaveLatent`` 的「回填本地二采latent」
+    writes to ``output`` and tags the ref ``type="output"`` — honour that root first,
+    then fall back to the other so either location resolves.
+    """
     video_file = (video.get("videoFile") or video.get("fileName") or "").strip()
     if not video_file:
         raise ValueError("No video file in MiniMax H3 Director timeline.")
 
-    base = folder_paths.get_input_directory()
     subfolder = (video.get("subfolder") or "").strip().replace("\\", "/")
+    ref_type = str(video.get("type") or "").strip().lower()
+
+    roots = [folder_paths.get_input_directory()]
+    try:
+        out_dir = folder_paths.get_output_directory()
+    except Exception:
+        out_dir = None
+    if out_dir:
+        # Declared output refs resolve against output/ first; input refs keep
+        # the historical input-first order (no behaviour change for uploads).
+        if ref_type == "output":
+            roots = [out_dir] + roots
+        else:
+            roots = roots + [out_dir]
 
     candidates = []
-    if subfolder and not video_file.startswith(subfolder):
-        candidates.append(os.path.join(base, subfolder, os.path.basename(video_file)))
-    candidates.append(os.path.join(base, video_file.replace("/", os.sep)))
-    candidates.append(os.path.join(base, os.path.basename(video_file)))
+    for base in roots:
+        if subfolder and not video_file.startswith(subfolder):
+            candidates.append(os.path.join(base, subfolder, os.path.basename(video_file)))
+        candidates.append(os.path.join(base, video_file.replace("/", os.sep)))
+        candidates.append(os.path.join(base, os.path.basename(video_file)))
 
     for path in candidates:
         if os.path.isfile(path):

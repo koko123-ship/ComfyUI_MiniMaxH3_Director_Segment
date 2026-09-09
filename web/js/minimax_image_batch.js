@@ -329,6 +329,62 @@ function applyBatchSegmentDuration(editor, index, rawSec) {
 }
 
 /**
+ * 批量秒数:把 rawSec 一次性应用到所有「已选择」的素材组。
+ * 勾选了「选择运行」时只作用于勾选项,否则作用于全部组。
+ * 返回 { count, durationSec }:应用的组数与实际生效的秒数。
+ */
+export function applyBatchDurationToSelectedGroups(editor, rawSec) {
+    const none = { count: 0, durationSec: null };
+    const taskKey = resolveTaskKey(editor.getTaskKey?.() || editor.taskTypeWidget?.value);
+    if (!isVideoBatchTask(taskKey)) return none;
+    if (editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.()) {
+        alert(t("external.durationLocked"));
+        return none;
+    }
+    // Persist DOM drafts before mutating segments (same guard as full re-render).
+    flushBatchPromptInputs(editor);
+    flushBatchDurationInputs(editor);
+    const segs = editor.timeline.segments || [];
+    if (!segs.length) return none;
+    let indices = null;
+    if (editor.isRunSelectEnabled?.() && editor.supportsRunSelect?.()) {
+        indices = [...new Set((editor.timeline.runSelection || [])
+            .map((i) => Number(i))
+            .filter((i) => Number.isInteger(i) && i >= 0 && i < segs.length))];
+    }
+    if (!indices) indices = segs.map((_, i) => i);
+    if (!indices.length) {
+        alert(t("runSelect.noneChecked", { unit: t("unit.group") }));
+        return none;
+    }
+    for (const i of indices) applyBatchSegmentDuration(editor, i, rawSec);
+    // renderImageBatchGroups() starts by flushing visible 秒数 inputs back into
+    // segments — sync them first, otherwise the stale card values revert the batch.
+    const list = editor.batchList;
+    if (list) {
+        for (const input of list.querySelectorAll("input[data-batch-sec-index]")) {
+            const idx = parseInt(input.getAttribute("data-batch-sec-index"), 10);
+            if (!Number.isFinite(idx)) continue;
+            clearTimeout(input._t);
+            input._t = null;
+            const seg = editor.timeline.segments?.[idx];
+            if (seg?.durationSec != null) input.value = String(seg.durationSec);
+        }
+    }
+    // Keep total_frames widget in sync with sum of group frames.
+    if (editor.totalFramesWidget) {
+        editor.totalFramesWidget.value = sumFrameCounts(editor.timeline.segments);
+    }
+    editor.scheduleTimelineSync?.();
+    editor.scheduleRender?.();
+    editor.updateVideoNameLabel?.();
+    editor.updateOutputPreview?.();
+    editor.renderImageBatchGroups?.();
+    const firstSeg = editor.timeline.segments?.[indices[0]];
+    return { count: indices.length, durationSec: firstSeg?.durationSec ?? null };
+}
+
+/**
  * Pull prompt textareas into timeline.segments by card index.
  * Must run before normalize / re-render / timeline sync — otherwise edits sit on
  * stale segment objects (or only in the DOM) and get wiped.
@@ -2541,6 +2597,46 @@ export function setImageBatchPreview(editor, segmentIndex, imageB64, extra = {})
         }
     }
     editor.renderImageBatchGroups();
+}
+
+/**
+ * MiniMaxH3SaveLatent「回填」:把保存好的 latent 路径写入指定素材组的
+ * 「本地二采latent」槽(twoLatent),并重渲染显示 + 持久化到 timeline_data。
+ *
+ * segmentIndex 为时间轴素材组卡片下标(后端 seg.timeline_index)。
+ * fl2v 模式下 shots 才是源数据(segments 由 shots 派生),必须写 shots。
+ */
+export function applyLatentBackfill(editor, segmentIndex, ref) {
+    const index = Number(segmentIndex);
+    if (!editor || !Number.isFinite(index) || index < 0) return false;
+    if (!ref || !(ref.videoFile || ref.fileName)) return false;
+
+    const value = {
+        videoFile: ref.videoFile || "",
+        fileName: ref.fileName || ref.videoFile || "",
+        subfolder: ref.subfolder || "",
+        // "output": SaveLatent 存在 output/,后端 resolve_video_path 据此定位。
+        type: ref.type || "output",
+    };
+
+    const shots = editor.timeline?.shots;
+    const segs = editor.timeline?.segments;
+    let target = null;
+    if (editor.isFl2vMode?.() && Array.isArray(shots) && shots[index]) {
+        target = shots[index];
+    } else {
+        target = Array.isArray(segs) ? segs[index] : null;
+        // 两处都存在时一起写,避免 normalize 前后不一致。
+        if (Array.isArray(shots) && shots[index] && shots[index] !== target) {
+            shots[index].twoLatent = { ...value };
+        }
+    }
+    if (!target) return false;
+
+    target.twoLatent = { ...value };
+    editor.scheduleRender?.();
+    editor.commit(false, { syncTimeline: true });
+    return true;
 }
 
 export function bindImageBatchEvents(editor) {

@@ -24,6 +24,8 @@ import {
     MAX_REFERENCE_IMAGES,
     MAX_REFERENCE_VIDEOS,
     MINIMAX_CANVAS_MULTIPLE,
+    minDurationSec,
+    maxDurationSec,
     minFrameCount,
     newBatchSegment,
     NO_VIDEO_UPLOAD_TASKS,
@@ -45,6 +47,8 @@ import {
 import {
     IMAGE_BATCH_STYLES,
     addImageBatchGroup,
+    applyBatchDurationToSelectedGroups,
+    applyLatentBackfill,
     autoFillR2vSegmentsFromJson,
     bindImageBatchEvents,
     bindR2vMediaPlayback,
@@ -669,9 +673,9 @@ const STYLES = `
 .bd-btn-del-split:hover{background:#4a1515;border-color:#f88;color:#fcc}
 .bd-btn-sm{padding:3px 8px;font-size:10px}
 .bd-btn-run-select.active{background:#1a3a2a;color:#4fff8f;border-color:#4fff8f}
-.bd-output .bd-btn-live-preview{margin-left:auto;background:#222;border-color:#333;color:#aaa;white-space:nowrap;height:29px;min-height:29px;padding:4px 12px}
-.bd-output .bd-btn-live-preview:hover{background:#2a2a2a;border-color:#555;color:#ddd}
-.bd-output .bd-btn-live-preview.active{background:#1a3a2a;color:#4fff8f;border-color:#4fff8f;box-shadow:0 0 0 1px rgba(79,255,143,.35)}
+.bd-output .bd-btn-batch-sec{margin-left:auto;background:#222;border-color:#333;color:#aaa;white-space:nowrap;height:29px;min-height:29px;padding:4px 12px}
+.bd-output .bd-btn-batch-sec:hover{background:#2a2a2a;border-color:#555;color:#ddd}
+.bd-output .bd-btn-batch-sec-input{height:29px;box-sizing:border-box;margin-left:0}
 .bd-live-sample{width:100%;box-sizing:border-box;display:flex;flex-direction:column;gap:8px;padding:10px 12px;background:linear-gradient(165deg,#1a1a1a 0%,#121212 100%);border:1px solid #333;border-radius:10px;flex-shrink:0}
 .bd-live-sample.hidden{display:none!important}
 .bd-live-sample.receiving{border-color:#4fff8f;box-shadow:0 0 0 1px rgba(79,255,143,.35)}
@@ -1258,8 +1262,6 @@ function initDirectorEditor(node) {
         healOversizedDirectorNode(node, node._minimaxEditor);
         syncDirectorNodeSize(node, node._minimaxEditor);
         scheduleDirectorLayoutSettle(node._minimaxEditor);
-        // 编辑器就绪后把已有「回填」登记写回素材组二采槽(有登记才动作,幂等)。
-        setTimeout(() => node._minimaxEditor?.applyBackfilledLatents?.(), 0);
         return node._minimaxEditor;
     } catch (err) {
         console.error("[MiniMax H3Director] UI init failed:", err);
@@ -2339,7 +2341,8 @@ class MiniMaxH3DirectorEditor {
             <span class="bd-meta bd-two-video-unavailable" data-r="two-video-unavailable"
                   data-i18n-title="tooltip.twoVideoUnavailable"
                   title="本地二采视频仅作为 frames_0/audio_0 输出给外部自定义采样,不参与内部条件编码。">本地二采不可用</span>
-            <button type="button" class="bd-btn bd-btn-live-preview active" data-a="live-tae-preview" data-i18n="toolbar.liveTaePreview" data-i18n-title="tooltip.liveTaePreview">实时预览</button>`;
+            <button type="button" class="bd-btn bd-btn-batch-sec" data-a="batch-sec-apply" data-i18n="toolbar.batchSec" data-i18n-title="tooltip.batchSec">批量秒数</button>
+            <input type="number" class="bd-num bd-btn-batch-sec-input" data-r="batch-sec-input" min="${minDurationSec()}" max="${maxDurationSec()}" step="0.1" value="10" style="width:56px" data-i18n-title="tooltip.batchSec">`;
         this.mainBody.appendChild(outputBar);
         this.outputBarEl = outputBar;
 
@@ -2669,12 +2672,11 @@ class MiniMaxH3DirectorEditor {
         bind('[data-a="settings"]', () => this.openSettingsPanel());
         bind('[data-a="play"]', () => this.togglePlay());
         bind('[data-a="loop"]', () => this.toggleLoop());
-        bind('[data-a="live-tae-preview"]', () => this.toggleLiveTaePreview());
+        bind('[data-a="batch-sec-apply"]', () => this.applyBatchSeconds());
         bind('[data-a="frame-prev"]', () => this.stepFrame(-1));
         bind('[data-a="frame-next"]', () => this.stepFrame(1));
         bind('[data-a="zoom-in"]', () => this.adjustZoom(0.5));
         bind('[data-a="zoom-out"]', () => this.adjustZoom(-0.5));
-        this.refreshLiveTaePreviewButton();
         this.updateLiveSamplePanel();
 
         this.seekBar.oninput = () => {
@@ -4920,7 +4922,6 @@ class MiniMaxH3DirectorEditor {
         this.updateOutputPreview?.();
         this.updateSelectionUI?.();
         this.refreshLoopButtonTitle?.();
-        this.refreshLiveTaePreviewButton?.();
         this.updateLiveSamplePanel?.();
         this.syncExternalGroupsTimeline?.();
         updateFl2vDetailUI?.(this);
@@ -5595,60 +5596,6 @@ class MiniMaxH3DirectorEditor {
         }
         if (this.isImageBatch()) this.renderImageBatchGroups();
         else this.updateSelectionUI();
-    }
-
-    /** 把 SaveLatent「回填」登记(output/minimax_h3_backfill.json)真写回素材组二采槽。
-
-     * 回填登记在后台只做「运行时覆盖」(段节点 execute 用 get_backfill 覆盖该行
-     * twoLatent),从不改 timeline_data,所以面板槽位一直空着。这里把 (本节点, 行)
-     * 的登记条目写进对应素材组行的 ``twoLatent`` → 面板像手动上传一样显示,并随
-     * 工作流保存永久在。登记行无 → 不动该行(保留用户手动填的 / 空)。
-     *
-     * 只在 image_batch 素材组编辑器生效;开了「选择运行」时跳过(选择运行的行号是
-     * 紧凑序号,不能直接当 timeline.segments 数组下标)。
-     *
-     * @returns {Promise<boolean>} 是否发生了写回。
-     */
-    async applyBackfilledLatents() {
-        if (!this.isImageBatch?.() || this.isRunSelectEnabled?.()) return false;
-        if (!this.timelineWidget) return false;
-        let rowMap;
-        try {
-            const resp = await api.fetchApi(
-                `/minimax/director_local/backfill?node_id=${encodeURIComponent(this.node.id)}`,
-            );
-            if (!resp.ok) return false;
-            rowMap = await resp.json();
-        } catch (err) {
-            return false;
-        }
-        if (!rowMap || typeof rowMap !== "object") return false;
-        const segs = this.timeline?.segments || [];
-        if (!segs.length) return false;
-        let changed = false;
-        for (const [rowKey, entry] of Object.entries(rowMap)) {
-            const row = Number(rowKey);
-            if (!Number.isInteger(row) || row < 0 || row >= segs.length) continue;
-            const seg = segs[row];
-            if (!seg || typeof seg !== "object") continue;
-            const file = entry?.videoFile || entry?.fileName;
-            if (!file) continue;
-            const cur = seg.twoLatent;
-            if ((cur?.videoFile || cur?.fileName) === file) continue; // 已是最新
-            seg.twoLatent = {
-                videoFile: file,
-                fileName: entry?.fileName || file,
-                subfolder: entry?.subfolder || "",
-                type: entry?.type || "input",
-            };
-            changed = true;
-        }
-        if (changed) {
-            // 与 uploadLocalLatent 手动上传同一套写回链路:渲染 + 序列化进 timeline_data。
-            this.scheduleRender?.();
-            this.commit(false, { syncTimeline: true });
-        }
-        return changed;
     }
 
     normalizeSegments() {
@@ -9135,24 +9082,21 @@ class MiniMaxH3DirectorEditor {
             || key === "rv2v" || key === "vrc2v" || key === "vi2v";
     }
 
-    toggleLiveTaePreview() {
-        this.timeline.liveTaePreview = !this.isLiveTaePreviewEnabled();
-        this.refreshLiveTaePreviewButton();
-        this.updateLiveSamplePanel();
-        this.scheduleTimelineSync();
-        this.updateDomWidgetHeight?.();
-        syncDirectorNodeSize(this.node, this);
-    }
-
-    refreshLiveTaePreviewButton() {
-        const btn = this.root?.querySelector('[data-a="live-tae-preview"]');
-        if (!btn) return;
-        const on = this.isLiveTaePreviewEnabled();
-        btn.classList.toggle("active", on);
-        btn.textContent = t("toolbar.liveTaePreview");
-        btn.title = on ? t("tooltip.liveTaePreviewOn") : t("tooltip.liveTaePreviewOff");
-        btn.setAttribute("data-i18n", "toolbar.liveTaePreview");
-        btn.removeAttribute("data-i18n-title");
+    /** 批量秒数:一次点击把输入框秒数应用到所有已选择的素材组。 */
+    applyBatchSeconds() {
+        const input = this.root?.querySelector('[data-r="batch-sec-input"]');
+        const raw = parseFloat(input?.value);
+        if (!Number.isFinite(raw) || raw <= 0) {
+            alert(t("tooltip.batchSecInvalid"));
+            return;
+        }
+        const result = applyBatchDurationToSelectedGroups(this, raw);
+        if (result.count > 0) {
+            if (Number.isFinite(result.durationSec)) {
+                input.value = String(result.durationSec);
+            }
+            this.updateRunSelectUI?.();
+        }
     }
 
     _clearEmbeddedLiveLayoutClasses() {
@@ -10294,17 +10238,11 @@ app.registerExtension({
             }
         });
 
-        // SaveLatent「回填」在输出节点 execute 里登记(存完立刻回填登记)。跑完一个输出
-        // 节点后把最新登记写回各段节点素材组二采槽 → 面板立即显示(去抖合并连续节点)。
-        let backfillApplyTimer = null;
-        api.addEventListener("executed", () => {
-            if (backfillApplyTimer) clearTimeout(backfillApplyTimer);
-            backfillApplyTimer = setTimeout(() => {
-                const graph = app.graph ?? app.canvas?.graph;
-                for (const node of graph?._nodes ?? graph?.nodes ?? []) {
-                    node._minimaxEditor?.applyBackfilledLatents?.();
-                }
-            }, 250);
+        // MiniMaxH3SaveLatent backfill=回填:把保存路径写入当前素材组的「本地二采latent」槽。
+        api.addEventListener("minimax_director_latent_backfill", ({ detail }) => {
+            const editor = findDirectorNode(detail?.node_id)?._minimaxEditor;
+            if (!editor) return;
+            applyLatentBackfill(editor, detail?.segment_index, detail?.latent);
         });
 
         patchDirectorDomWidgetLayout();

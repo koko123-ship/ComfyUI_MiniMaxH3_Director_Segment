@@ -22,6 +22,7 @@ from .nodes.r2v_segment import (
 )
 from .nodes.h3_latent_upscale import MiniMaxH3LatentUpscaleTo
 from .nodes.save_latent import MiniMaxH3SaveLatent
+from .nodes.remove_negative_time_context import MiniMaxH3RemoveNegativeTimeContext
 
 NODE_CLASS_MAPPINGS = {
     # 本地改版身份:与上游 ComfyUI_MiniMaxH3_Director 同装时互不覆盖,节点 ID 加 Local 后缀。
@@ -40,6 +41,7 @@ NODE_CLASS_MAPPINGS = {
     "MiniMaxH3R2VSegment": MiniMaxH3R2VSegment,
     "MiniMaxH3R2VTrim": MiniMaxH3R2VTrim,
     "MiniMaxH3AudioSelect": MiniMaxH3AudioSelect,
+    "MiniMaxH3RemoveNegativeTimeContext": MiniMaxH3RemoveNegativeTimeContext,
     "MiniMaxH3SaveLatent": MiniMaxH3SaveLatent,
     "MiniMaxH3LatentUpscaleTo": MiniMaxH3LatentUpscaleTo,
 }
@@ -56,6 +58,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3R2VSegment": "MiniMax H3 Segment",
     "MiniMaxH3R2VTrim": "MiniMax H3 R2V Trim",
     "MiniMaxH3AudioSelect": "MiniMax H3 Audio Select",
+    "MiniMaxH3RemoveNegativeTimeContext": "MiniMax H3 Remove Negative Time Context",
     "MiniMaxH3SaveLatent": "MiniMax H3 Save Latent",
     "MiniMaxH3LatentUpscaleTo": "MiniMax H3 Latent Upscale To",
 }
