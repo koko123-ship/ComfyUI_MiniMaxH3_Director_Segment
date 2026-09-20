@@ -47,9 +47,18 @@ mode: generate（默认）/ source / mute
 保存视频latent，并支持回填到素材组。
 
 
-### 5. `MiniMaxH3RemoveNegativeTimeContext` —— 移除负时间条件
+### 5. `MiniMaxH3RemoveNegativeTimeContext` —— 清空段间衔接条件
 
-移除「段间衔接」注入的纯负时间 context blocks 与衔接音频 ref，**保留**首帧身份 pin。未注入时原样透传，可在工作流中常开。
+清掉「段间衔接」注入的负时间 context blocks 与衔接音频 ref，保留提示词、r2v 参考图/视频与 Director 正时间锚点。首帧身份 pin 由 `pin` 选项决定去留：
+
+| `pin` | 行为 | 用途 |
+| --- | --- | --- |
+| `清除首帧pin`（默认） | 三样全清，frame 0 不再有锚点 | **改变分辨率的二次采样（放大二采）必须选这个** |
+| `保留首帧pin` | 只清负时间块与衔接音频 ref，保住「上段结尾=本段开头」的 frame0 身份锁 | 同分辨率的续接（采样1 / 采样2） |
+
+为什么放大二采必须清 pin：身份 pin 是按段分辨率编码的，采样目标网格一变，layout 的 cond 行数与 cond latent 实际行数就对不上，模型里直接报 shape 错误。代价是 frame 0 失去锚点（上游已丢弃 stock 首帧 keyframe，无法从下游恢复）。
+
+未注入时原样透传，可在工作流中常开。
 
 
 ## 安装
